@@ -1,15 +1,13 @@
-
 import Queue from "bull";
-import Redis from "ioredis";
 import {
   matchRideRequest,
   handleCancellation,
   MatchingConfig,
 } from "../algorithms/matcher";
 import logger from "../utils/logger";
-import { prisma } from "../utils/prisma"; // Added import for DB updates
+import { prisma } from "../utils/prisma";
+import { CONFIG } from "../config/constants"; // ✅ Import CONFIG
 
-// Redis connection
 const redisConfig = {
   host: process.env.REDIS_HOST || "localhost",
   port: parseInt(process.env.REDIS_PORT || "6379"),
@@ -17,39 +15,29 @@ const redisConfig = {
   enableReadyCheck: false,
 };
 
-// Create Bull queue
 export const matchingQueue = new Queue("ride-matching", {
   redis: redisConfig,
   defaultJobOptions: {
     attempts: 3,
-    backoff: {
-      type: "exponential",
-      delay: 2000,
-    },
+    backoff: { type: "exponential", delay: 2000 },
     removeOnComplete: true,
     removeOnFail: false,
   },
 });
 
-// Matching configuration
+// ✅ FIX: Use CONFIG constants instead of magic numbers
 const matchingConfig: MatchingConfig = {
-  maxPoolSize: parseInt(process.env.MAX_POOL_SIZE || "4"),
-  maxLuggage: parseInt(process.env.MAX_LUGGAGE_PER_POOL || "6"),
-  searchRadiusKm: 5,
-  maxDetourMins: parseInt(process.env.MAX_DETOUR_TOLERANCE_MINS || "15"),
+  maxPoolSize: CONFIG.MATCHING.MAX_POOL_SIZE,
+  maxLuggage: CONFIG.MATCHING.MAX_LUGGAGE,
+  searchRadiusKm: CONFIG.MATCHING.SEARCH_RADIUS_KM,
+  maxDetourMins: CONFIG.MATCHING.MAX_DETOUR_MINS,
 };
 
-/**
- * Process matching jobs
- * Concurrency: 10 parallel jobs (configurable)
- */
 matchingQueue.process(
   parseInt(process.env.QUEUE_CONCURRENCY || "10"),
   async (job) => {
     const { requestId, action } = job.data;
-
     logger.info(`Processing ${action} for request ${requestId}`);
-
     try {
       if (action === "match") {
         const result = await matchRideRequest(requestId, matchingConfig);
@@ -67,15 +55,16 @@ matchingQueue.process(
   },
 );
 
+// ... rest of the file remains unchanged (queueRideMatch, queueCancellation, etc.) ...
+// Ensure you keep the failure handling and other functions below this line as they were.
+
 export async function queueRideMatch(requestId: string): Promise<void> {
+  // ... (Code from Step 12) ...
   const existingJob = await matchingQueue.getJob(`match-${requestId}`);
   if (existingJob) {
     const state = await existingJob.getState();
-    if (state === "active" || state === "waiting") {
-      return;
-    }
+    if (state === "active" || state === "waiting") return;
   }
-
   await matchingQueue.add(
     { requestId, action: "match" },
     {
@@ -88,29 +77,18 @@ export async function queueRideMatch(requestId: string): Promise<void> {
 }
 
 export async function queueCancellation(requestId: string): Promise<void> {
-  // Remove pending match job if exists
   const matchJob = await matchingQueue.getJob(`match-${requestId}`);
-  if (matchJob) {
-    await matchJob.remove();
-  }
-
+  if (matchJob) await matchJob.remove();
   await matchingQueue.add(
     { requestId, action: "cancel" },
-    {
-      jobId: `cancel-${requestId}`,
-      priority: 10, // Higher priority for cancellations
-    },
+    { jobId: `cancel-${requestId}`, priority: 10 },
   );
   logger.info(`Queued cancellation job for request ${requestId}`);
 }
 
-/**
- * Get job status
- */
 export async function getJobStatus(requestId: string): Promise<any> {
   const job = await matchingQueue.getJob(`match-${requestId}`);
   if (!job) return null;
-
   const state = await job.getState();
   return {
     id: job.id,
@@ -123,9 +101,6 @@ export async function getJobStatus(requestId: string): Promise<any> {
   };
 }
 
-/**
- * Queue health check
- */
 export async function getQueueHealth(): Promise<any> {
   const [waiting, active, completed, failed, delayed] = await Promise.all([
     matchingQueue.getWaitingCount(),
@@ -134,46 +109,30 @@ export async function getQueueHealth(): Promise<any> {
     matchingQueue.getFailedCount(),
     matchingQueue.getDelayedCount(),
   ]);
-
   return {
     waiting,
     active,
     completed,
     failed,
     delayed,
-    healthy: active < 100 && waiting < 500, // Arbitrary thresholds
+    healthy: active < 100 && waiting < 500,
   };
 }
 
-/**
- * Event listeners for monitoring
- */
 matchingQueue.on("completed", (job, result) => {
   logger.info(`Job ${job.id} completed:`, result);
 });
 
-// ✅ FIX: Enhanced failure monitoring and recovery
 matchingQueue.on("failed", async (job, err) => {
   logger.error(`Job ${job.id} failed:`, err);
-
   try {
-    // Update ride status in DB to allow manual retry or analysis
-    // Note: Assuming 'failureCount' might be added to schema later,
-    // for now we reset status to PENDING so it's not stuck in limbo.
     await prisma.rideRequest.update({
       where: { id: job.data.requestId },
-      data: {
-        status: "PENDING",
-        // failureCount: { increment: 1 } // Uncomment if schema supports it
-      },
+      data: { status: "PENDING" },
     });
-
-    // Alert if too many failures
     const failedCount = await matchingQueue.getFailedCount();
-    if (failedCount > 100) {
-      // Replaced undefined 'alertOps' with logger
+    if (failedCount > 100)
       logger.error(`CRITICAL ALERT: High queue failure rate: ${failedCount}`);
-    }
   } catch (error) {
     logger.error(`Error handling failed job logic for ${job.id}:`, error);
   }
@@ -183,9 +142,6 @@ matchingQueue.on("stalled", (job) => {
   logger.warn(`Job ${job.id} stalled`);
 });
 
-/**
- * Graceful shutdown
- */
 export async function closeQueue(): Promise<void> {
   await matchingQueue.close();
   logger.info("Queue closed");
