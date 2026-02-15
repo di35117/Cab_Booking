@@ -7,7 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Passenger model
 model Passenger {
   id            String   @id @default(uuid())
   name          String
@@ -22,81 +21,82 @@ model Passenger {
 }
 
 model RideRequest {
-  id                String         @id @default(uuid())
-  passengerId       String
-  pickupLat         Float
-  pickupLng         Float
-  pickupAddress     String
-  dropoffLat        Float
-  dropoffLng        Float
-  dropoffAddress    String
-  requestedAt       DateTime       @default(now())
-  status            RequestStatus  @default(PENDING)
-  luggageCount      Int            @default(1)
-  seatCount         Int            @default(1)
-  maxDetourMins     Int            @default(15)
-  estimatedPrice    Float?
-  actualPrice       Float?
-  poolId            String?
-  cancelledAt       DateTime?
-  completedAt       DateTime?
-  version           Int            @default(0) // For optimistic locking
+  id              String         @id @default(uuid())
+  passengerId     String
+  pickupLat       Float
+  pickupLng       Float
+  pickupAddress   String
+  dropoffLat      Float
+  dropoffLng      Float
+  dropoffAddress  String
+  requestedAt     DateTime       @default(now())
+  status          RequestStatus  @default(PENDING)
+  luggageCount    Int            @default(1)
+  seatCount       Int            @default(1)
+  maxDetourMins   Int            @default(15)
+  estimatedPrice  Float?
+  actualPrice     Float?
+  poolId          String?
+  cancelledAt     DateTime?
+  completedAt     DateTime?
+  version         Int            @default(0) // For optimistic locking
   
-  passenger         Passenger      @relation(fields: [passengerId], references: [id])
-  pool              Pool?          @relation(fields: [poolId], references: [id])
+  passenger       Passenger      @relation(fields: [passengerId], references: [id])
+  pool            Pool?          @relation(fields: [poolId], references: [id], onDelete: SetNull)
   
   @@index([status])
   @@index([poolId])
   @@index([pickupLat, pickupLng])
   @@index([requestedAt])
 }
+
 model Pool {
-  id                String       @id @default(uuid())
-  status            PoolStatus   @default(FORMING)
-  createdAt         DateTime     @default(now())
-  startedAt         DateTime?
-  completedAt       DateTime?
-  maxSeats          Int          @default(4)
-  maxLuggage        Int          @default(6)
-  currentSeats      Int          @default(0)
-  currentLuggage    Int          @default(0)
-  totalDistance     Float        @default(0)
-  basePrice         Float        @default(0)
-  surgeFactor       Float        @default(1.0)
-  version           Int          @default(0) // For optimistic locking
+  id              String         @id @default(uuid())
+  status          PoolStatus     @default(FORMING)
+  createdAt       DateTime       @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  maxSeats        Int            @default(4)
+  maxLuggage      Int            @default(6)
+  currentSeats    Int            @default(0)
+  currentLuggage  Int            @default(0)
+  totalDistance   Float          @default(0)
+  basePrice       Float          @default(0)
+  surgeFactor     Float          @default(1.0)
+  version         Int            @default(0) // For optimistic locking
   
-  rideRequests      RideRequest[]
-  route             RoutePoint[]
+  rideRequests    RideRequest[]
+  route           RoutePoint[]
   
   @@index([status])
   @@index([createdAt])
 }
 
 model RoutePoint {
-  id            String   @id @default(uuid())
-  poolId        String
-  sequence      Int
-  latitude      Float
-  longitude     Float
-  address       String
-  type          String   // 'PICKUP' or 'DROPOFF'
-  requestId     String?  // Associated ride request
+  id              String   @id @default(uuid())
+  poolId          String
+  sequence        Int
+  latitude        Float
+  longitude       Float
+  address         String
+  type            String   // 'PICKUP' or 'DROPOFF'
+  requestId       String?  // Associated ride request
   
-  pool          Pool     @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  pool            Pool     @relation(fields: [poolId], references: [id], onDelete: Cascade)
   
   @@unique([poolId, sequence])
   @@index([poolId])
 }
 
 model PricingConfig {
-  id                String   @id @default(uuid())
-  baseFare          Float    @default(50.0)
-  perKmRate         Float    @default(12.0)
-  perMinuteRate     Float    @default(2.0)
-  poolDiscount      Float    @default(0.30) // 30% discount
-  surgeThreshold    Int      @default(80)   // % of capacity
-  maxSurgeFactor    Float    @default(2.5)
-  updatedAt         DateTime @updatedAt
+  id              String   @id @default(uuid())
+  baseFare        Float    @default(50.0)
+  perKmRate       Float    @default(12.0)
+  perMinuteRate   Float    @default(2.0)
+  poolDiscount    Float    @default(0.30) // 30% discount
+  surgeThreshold  Int      @default(80)   // % of capacity
+  maxSurgeFactor  Float    @default(2.5)
+  updatedAt       DateTime @updatedAt
 }
 
 enum RequestStatus {
