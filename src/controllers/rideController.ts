@@ -5,6 +5,7 @@
 
 import { Request, Response } from "express";
 import { prisma } from "../utils/prisma";
+import Redis from "ioredis"; // ✅ Added Redis import
 import {
   queueRideMatch,
   queueCancellation,
@@ -13,12 +14,30 @@ import {
 import { getEstimatedPrice } from "../services/pricingEngine";
 import logger from "../utils/logger";
 
+// ✅ Configure Redis for Idempotency
+const redis = new Redis({
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379"),
+});
+
 /**
  * POST /api/rides/request
  * Create a new ride request and queue for matching
  */
 export async function createRideRequest(req: Request, res: Response) {
   try {
+    // ✅ 1. Check Idempotency Key
+    const idempotencyKey = req.headers["idempotency-key"] as string;
+
+    if (idempotencyKey) {
+      const cachedResponse = await redis.get(`idempotency:${idempotencyKey}`);
+      if (cachedResponse) {
+        logger.info(`Idempotency hit for key: ${idempotencyKey}`);
+        // Return cached 200/201 response
+        return res.status(200).json(JSON.parse(cachedResponse));
+      }
+    }
+
     const {
       passengerId,
       passengerName,
@@ -32,7 +51,7 @@ export async function createRideRequest(req: Request, res: Response) {
       luggageCount = 1,
       seatCount = 1,
       maxDetourMins = 15,
-    } = req.body; // Validate required fields
+    } = req.body;
 
     if (!pickupLat || !pickupLng || !dropoffLat || !dropoffLng) {
       return res
@@ -40,7 +59,7 @@ export async function createRideRequest(req: Request, res: Response) {
         .json({ error: "Missing required location fields" });
     }
 
-    // --- NEW VALIDATION START ---
+    // --- EXISTING VALIDATION START ---
     // Validate Coordinate Ranges
     if (
       pickupLat < -90 ||
@@ -76,9 +95,10 @@ export async function createRideRequest(req: Request, res: Response) {
       return res
         .status(400)
         .json({ error: "Max detour minutes cannot be negative" });
-    } // Create or find passenger
-    // --- NEW VALIDATION END ---
+    }
+    // --- EXISTING VALIDATION END ---
 
+    // Create or find passenger
     let passenger;
     if (passengerId) {
       passenger = await prisma.passenger.findUnique({
@@ -101,8 +121,9 @@ export async function createRideRequest(req: Request, res: Response) {
 
     if (!passenger) {
       return res.status(404).json({ error: "Passenger not found" });
-    } // Get price estimate
+    }
 
+    // Get price estimate
     const priceEstimate = await getEstimatedPrice(
       pickupLat,
       pickupLng,
@@ -110,8 +131,9 @@ export async function createRideRequest(req: Request, res: Response) {
       dropoffLng,
       luggageCount,
       seatCount,
-    ); // Create ride request
+    );
 
+    // Create ride request
     const rideRequest = await prisma.rideRequest.create({
       data: {
         passengerId: passenger.id,
@@ -127,19 +149,32 @@ export async function createRideRequest(req: Request, res: Response) {
         estimatedPrice: priceEstimate.pooledPrice,
         status: "PENDING",
       },
-    }); // Queue for matching (async)
+    });
 
+    // Queue for matching (async)
     queueRideMatch(rideRequest.id).catch((err) => {
       logger.error("Failed to queue ride match:", err);
     });
 
     logger.info(`Created ride request ${rideRequest.id}`);
 
-    res.status(201).json({
+    // Construct Response
+    const responseData = {
       rideRequest,
       priceEstimate,
       message: "Ride request created and queued for matching",
-    });
+    };
+
+    // ✅ 2. Save Idempotent Response (TTL 24 hours)
+    if (idempotencyKey) {
+      await redis.setex(
+        `idempotency:${idempotencyKey}`,
+        86400, // 24 hours in seconds
+        JSON.stringify(responseData),
+      );
+    }
+
+    res.status(201).json(responseData);
   } catch (error) {
     logger.error("Error creating ride request:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -201,15 +236,11 @@ export async function getRideRequest(req: Request, res: Response) {
  * DELETE /api/rides/:id
  * Cancel a ride request
  */
-// Assuming your Request interface is extended with user info (e.g., from JWT middleware)
-// interface AuthenticatedRequest extends Request {
-//   user?: { id: string };
-// }
-
 export async function cancelRideRequest(req: Request, res: Response) {
   try {
-    const { id } = req.params; // 1. Get the authenticated user's ID
-    // Note: Adjust 'req.user.id' based on your actual auth middleware structure
+    const { id } = req.params;
+
+    // 1. Get the authenticated user's ID
     const currentUserId = (req as any).user?.id;
 
     if (!currentUserId) {
@@ -222,9 +253,12 @@ export async function cancelRideRequest(req: Request, res: Response) {
 
     if (!rideRequest) {
       return res.status(404).json({ error: "Ride request not found" });
-    } // 2. VERIFICATION CHECK: Is the current user the owner?
+    }
 
-    if (rideRequest.userId !== currentUserId) {
+    // 2. VERIFICATION CHECK: Is the current user the owner?
+    // Note: Assuming schema uses passengerId (standard) or userId
+    // Using 'passengerId' based on your previous schema snippets
+    if (rideRequest.passengerId !== currentUserId) {
       return res
         .status(403)
         .json({ error: "You are not authorized to cancel this ride" });
