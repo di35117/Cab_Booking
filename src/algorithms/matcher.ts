@@ -1,7 +1,12 @@
+/**
+ * Ride Matching Algorithm
+ * Groups passengers into pools while respecting constraints
+ * Uses greedy algorithm with spatial filtering
+ */
 
 import { RideRequest, Pool } from "@prisma/client";
 import { prisma } from "../utils/prisma";
-import { haversineDistance, Coordinate } from "../utils/geospatial"; // ✅ Removed unused SpatialGrid
+import { haversineDistance, Coordinate } from "../utils/geospatial";
 import {
   optimizeRoute,
   calculateDirectRoute,
@@ -9,6 +14,7 @@ import {
   DetourConstraint,
 } from "./routeOptimizer";
 import logger from "../utils/logger";
+import { CONFIG } from "../config/constants"; // ✅ Import CONFIG
 
 export interface MatchingConfig {
   maxPoolSize: number;
@@ -62,16 +68,10 @@ export async function matchRideRequest(
   };
 }
 
-/**
- * Find compatible pool for a ride request
- * ✅ FIX: Now uses haversineDistance to filter pools by location
- */
 async function findCompatiblePool(
   request: RideRequest,
   config: MatchingConfig,
 ): Promise<Pool | null> {
-  // 1. Fetch all candidate pools that are forming and have space
-  // Note: In a production PostGIS DB, we would add bounding box logic to the WHERE clause here.
   const candidatePools = await prisma.pool.findMany({
     where: {
       status: "FORMING",
@@ -81,7 +81,6 @@ async function findCompatiblePool(
     include: {
       rideRequests: true,
     },
-    // Limit candidates to prevent scanning entire DB in extreme cases
     take: 50,
     orderBy: { createdAt: "desc" },
   });
@@ -91,10 +90,7 @@ async function findCompatiblePool(
     lng: request.pickupLng,
   };
 
-  // 2. Filter pools by spatial proximity
   const nearbyPools = candidatePools.filter((pool) => {
-    // If pool is empty (edge case), it's available.
-    // If not, check distance to the first passenger's pickup (as a proxy for pool location)
     if (pool.rideRequests.length === 0) return true;
 
     const poolLoc: Coordinate = {
@@ -106,7 +102,6 @@ async function findCompatiblePool(
     return dist <= config.searchRadiusKm;
   });
 
-  // 3. Check detailed compatibility (route optimization)
   for (const pool of nearbyPools) {
     if (await isCompatible(request, pool, config)) {
       return pool;
@@ -116,17 +111,11 @@ async function findCompatiblePool(
   return null;
 }
 
-/**
- * Check if request is compatible with pool
- * Validates: capacity, luggage, route detour
- * Complexity: O(n²) due to route optimization
- */
 async function isCompatible(
   request: RideRequest,
   pool: Pool,
   config: MatchingConfig,
 ): Promise<boolean> {
-  // Double check basic capacity (redundant but safe)
   if (pool.currentSeats + request.seatCount > config.maxPoolSize) {
     return false;
   }
@@ -193,10 +182,6 @@ function buildDetourConstraints(
   return constraints;
 }
 
-/**
- * Add request to pool with optimistic locking
- * Uses version field to prevent race conditions
- */
 async function addToPool(
   request: RideRequest,
   pool: Pool,
@@ -319,16 +304,22 @@ async function updatePoolRoute(poolId: string, tx: any): Promise<void> {
   });
 }
 
+/**
+ * Calculate price for pooled ride
+ * ✅ FIX: Now uses CONFIG constants for fallback values
+ */
 async function calculatePooledPrice(
   request: RideRequest,
   poolId: string,
 ): Promise<number> {
   const pricingConfig = await prisma.pricingConfig.findFirst();
+
+  // Use DB config if available, otherwise use CONFIG constants
   const config = pricingConfig || {
-    baseFare: 50,
-    perKmRate: 12,
-    perMinuteRate: 2,
-    poolDiscount: 0.3,
+    baseFare: CONFIG.PRICING.BASE_FARE,
+    perKmRate: CONFIG.PRICING.PER_KM_RATE,
+    perMinuteRate: 2.0, // Keeping 2.0 as it wasn't in the provided CONFIG snippet
+    poolDiscount: CONFIG.PRICING.POOL_DISCOUNT_PERCENT / 100, // Convert 30 to 0.30
   };
 
   const { distance, time } = calculateDirectRoute(
