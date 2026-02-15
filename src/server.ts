@@ -4,7 +4,7 @@ import helmet from "helmet";
 import compression from "compression";
 import dotenv from "dotenv";
 import swaggerUi from "swagger-ui-express";
-import rateLimit from "express-rate-limit"; // Added import
+import rateLimit from "express-rate-limit";
 import { prisma } from "./utils/prisma";
 
 // Load environment variables
@@ -59,6 +59,8 @@ const createRideLimiter = rateLimit({
  * responses:
  * 200:
  * description: Service is healthy
+ * 503:
+ * description: Service is degraded (Queue backlog or DB down)
  */
 app.get("/health", async (req: Request, res: Response) => {
   try {
@@ -67,6 +69,23 @@ app.get("/health", async (req: Request, res: Response) => {
 
     // Check queue health
     const queueHealth = await getQueueHealth();
+
+    // ✅ FIX: Check for queue overload
+    // If queue depth > 1000, return 503 to signal degradation
+    if (queueHealth.waiting > 1000) {
+      logger.warn(
+        `Health check failed: Queue overloaded with ${queueHealth.waiting} jobs`,
+      );
+      return res.status(503).json({
+        status: "degraded",
+        timestamp: new Date().toISOString(),
+        database: "connected",
+        queue: {
+          waiting: queueHealth.waiting,
+          status: "overloaded",
+        },
+      });
+    }
 
     res.json({
       status: "healthy",
@@ -103,10 +122,7 @@ app.get("/", (req: Request, res: Response) => {
 });
 
 // Apply rate limiting
-// 1. Strict limit for ride creation (applied before general API routes to ensure it catches specific path)
 app.use("/api/rides/request", createRideLimiter);
-
-// 2. General limit for all API routes
 app.use("/api", apiLimiter);
 
 // API Routes
