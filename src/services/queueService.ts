@@ -1,29 +1,29 @@
-/**
- * Queue Service for Ride Matching
- * Handles concurrent ride requests using Bull queue
- * Prevents race conditions and ensures FIFO processing
- */
 
-import Queue from 'bull';
-import Redis from 'ioredis';
-import { matchRideRequest, handleCancellation, MatchingConfig } from '../algorithms/matcher';
-import logger from '../utils/logger';
+import Queue from "bull";
+import Redis from "ioredis";
+import {
+  matchRideRequest,
+  handleCancellation,
+  MatchingConfig,
+} from "../algorithms/matcher";
+import logger from "../utils/logger";
+import { prisma } from "../utils/prisma"; // Added import for DB updates
 
 // Redis connection
 const redisConfig = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379'),
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379"),
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
 };
 
 // Create Bull queue
-export const matchingQueue = new Queue('ride-matching', {
+export const matchingQueue = new Queue("ride-matching", {
   redis: redisConfig,
   defaultJobOptions: {
     attempts: 3,
     backoff: {
-      type: 'exponential',
+      type: "exponential",
       delay: 2000,
     },
     removeOnComplete: true,
@@ -33,10 +33,10 @@ export const matchingQueue = new Queue('ride-matching', {
 
 // Matching configuration
 const matchingConfig: MatchingConfig = {
-  maxPoolSize: parseInt(process.env.MAX_POOL_SIZE || '4'),
-  maxLuggage: parseInt(process.env.MAX_LUGGAGE_PER_POOL || '6'),
+  maxPoolSize: parseInt(process.env.MAX_POOL_SIZE || "4"),
+  maxLuggage: parseInt(process.env.MAX_LUGGAGE_PER_POOL || "6"),
   searchRadiusKm: 5,
-  maxDetourMins: parseInt(process.env.MAX_DETOUR_TOLERANCE_MINS || '15'),
+  maxDetourMins: parseInt(process.env.MAX_DETOUR_TOLERANCE_MINS || "15"),
 };
 
 /**
@@ -44,27 +44,27 @@ const matchingConfig: MatchingConfig = {
  * Concurrency: 10 parallel jobs (configurable)
  */
 matchingQueue.process(
-  parseInt(process.env.QUEUE_CONCURRENCY || '10'),
+  parseInt(process.env.QUEUE_CONCURRENCY || "10"),
   async (job) => {
     const { requestId, action } = job.data;
-    
+
     logger.info(`Processing ${action} for request ${requestId}`);
-    
+
     try {
-      if (action === 'match') {
+      if (action === "match") {
         const result = await matchRideRequest(requestId, matchingConfig);
         logger.info(`Match result for ${requestId}:`, result);
         return result;
-      } else if (action === 'cancel') {
+      } else if (action === "cancel") {
         await handleCancellation(requestId);
         logger.info(`Cancelled request ${requestId}`);
-        return { success: true, message: 'Cancelled successfully' };
+        return { success: true, message: "Cancelled successfully" };
       }
     } catch (error) {
       logger.error(`Error processing request ${requestId}:`, error);
       throw error;
     }
-  }
+  },
 );
 
 export async function queueRideMatch(requestId: string): Promise<void> {
@@ -93,13 +93,13 @@ export async function queueCancellation(requestId: string): Promise<void> {
   if (matchJob) {
     await matchJob.remove();
   }
-  
+
   await matchingQueue.add(
-    { requestId, action: 'cancel' },
+    { requestId, action: "cancel" },
     {
       jobId: `cancel-${requestId}`,
       priority: 10, // Higher priority for cancellations
-    }
+    },
   );
   logger.info(`Queued cancellation job for request ${requestId}`);
 }
@@ -110,7 +110,7 @@ export async function queueCancellation(requestId: string): Promise<void> {
 export async function getJobStatus(requestId: string): Promise<any> {
   const job = await matchingQueue.getJob(`match-${requestId}`);
   if (!job) return null;
-  
+
   const state = await job.getState();
   return {
     id: job.id,
@@ -134,7 +134,7 @@ export async function getQueueHealth(): Promise<any> {
     matchingQueue.getFailedCount(),
     matchingQueue.getDelayedCount(),
   ]);
-  
+
   return {
     waiting,
     active,
@@ -148,15 +148,38 @@ export async function getQueueHealth(): Promise<any> {
 /**
  * Event listeners for monitoring
  */
-matchingQueue.on('completed', (job, result) => {
+matchingQueue.on("completed", (job, result) => {
   logger.info(`Job ${job.id} completed:`, result);
 });
 
-matchingQueue.on('failed', (job, err) => {
+// ✅ FIX: Enhanced failure monitoring and recovery
+matchingQueue.on("failed", async (job, err) => {
   logger.error(`Job ${job.id} failed:`, err);
+
+  try {
+    // Update ride status in DB to allow manual retry or analysis
+    // Note: Assuming 'failureCount' might be added to schema later,
+    // for now we reset status to PENDING so it's not stuck in limbo.
+    await prisma.rideRequest.update({
+      where: { id: job.data.requestId },
+      data: {
+        status: "PENDING",
+        // failureCount: { increment: 1 } // Uncomment if schema supports it
+      },
+    });
+
+    // Alert if too many failures
+    const failedCount = await matchingQueue.getFailedCount();
+    if (failedCount > 100) {
+      // Replaced undefined 'alertOps' with logger
+      logger.error(`CRITICAL ALERT: High queue failure rate: ${failedCount}`);
+    }
+  } catch (error) {
+    logger.error(`Error handling failed job logic for ${job.id}:`, error);
+  }
 });
 
-matchingQueue.on('stalled', (job) => {
+matchingQueue.on("stalled", (job) => {
   logger.warn(`Job ${job.id} stalled`);
 });
 
@@ -165,5 +188,5 @@ matchingQueue.on('stalled', (job) => {
  */
 export async function closeQueue(): Promise<void> {
   await matchingQueue.close();
-  logger.info('Queue closed');
+  logger.info("Queue closed");
 }
