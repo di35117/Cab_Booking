@@ -7,10 +7,9 @@
  * - Luggage fees
  */
 
-import { PrismaClient } from '@prisma/client';
+import { prisma } from "../utils/prisma";
 import { haversineDistance, estimateTravelTime } from '../utils/geospatial';
 
-const prisma = new PrismaClient();
 
 export interface PriceBreakdown {
   baseFare: number;

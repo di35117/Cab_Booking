@@ -4,15 +4,9 @@
  */
 
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from "../utils/prisma";
 import logger from '../utils/logger';
 
-const prisma = new PrismaClient();
-
-/**
- * GET /api/pools
- * Get active pools with optional filters
- */
 export async function getPools(req: Request, res: Response) {
   try {
     const { status, limit = 20 } = req.query;

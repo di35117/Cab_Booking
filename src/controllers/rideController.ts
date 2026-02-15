@@ -3,13 +3,15 @@
  * Handles all ride-related API endpoints
  */
 
-import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
-import { queueRideMatch, queueCancellation, getJobStatus } from '../services/queueService';
-import { getEstimatedPrice } from '../services/pricingEngine';
-import logger from '../utils/logger';
-
-const prisma = new PrismaClient();
+import { Request, Response } from "express";
+import { prisma } from "../utils/prisma";
+import {
+  queueRideMatch,
+  queueCancellation,
+  getJobStatus,
+} from "../services/queueService";
+import { getEstimatedPrice } from "../services/pricingEngine";
+import logger from "../utils/logger";
 
 /**
  * POST /api/rides/request
@@ -30,17 +32,58 @@ export async function createRideRequest(req: Request, res: Response) {
       luggageCount = 1,
       seatCount = 1,
       maxDetourMins = 15,
-    } = req.body;
+    } = req.body; // Validate required fields
 
-    // Validate required fields
     if (!pickupLat || !pickupLng || !dropoffLat || !dropoffLng) {
-      return res.status(400).json({ error: 'Missing required location fields' });
+      return res
+        .status(400)
+        .json({ error: "Missing required location fields" });
     }
 
-    // Create or find passenger
+    // --- NEW VALIDATION START ---
+    // Validate Coordinate Ranges
+    if (
+      pickupLat < -90 ||
+      pickupLat > 90 ||
+      dropoffLat < -90 ||
+      dropoffLat > 90
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Latitude must be between -90 and 90" });
+    }
+    if (
+      pickupLng < -180 ||
+      pickupLng > 180 ||
+      dropoffLng < -180 ||
+      dropoffLng > 180
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Longitude must be between -180 and 180" });
+    }
+
+    // Validate Non-Negative Values
+    if (seatCount < 1) {
+      return res.status(400).json({ error: "Seat count must be at least 1" });
+    }
+    if (luggageCount < 0) {
+      return res
+        .status(400)
+        .json({ error: "Luggage count cannot be negative" });
+    }
+    if (maxDetourMins < 0) {
+      return res
+        .status(400)
+        .json({ error: "Max detour minutes cannot be negative" });
+    } // Create or find passenger
+    // --- NEW VALIDATION END ---
+
     let passenger;
     if (passengerId) {
-      passenger = await prisma.passenger.findUnique({ where: { id: passengerId } });
+      passenger = await prisma.passenger.findUnique({
+        where: { id: passengerId },
+      });
     } else if (passengerPhone) {
       passenger = await prisma.passenger.upsert({
         where: { phone: passengerPhone },
@@ -51,24 +94,24 @@ export async function createRideRequest(req: Request, res: Response) {
         },
       });
     } else {
-      return res.status(400).json({ error: 'Must provide passengerId or passengerPhone' });
+      return res
+        .status(400)
+        .json({ error: "Must provide passengerId or passengerPhone" });
     }
 
     if (!passenger) {
-      return res.status(404).json({ error: 'Passenger not found' });
-    }
+      return res.status(404).json({ error: "Passenger not found" });
+    } // Get price estimate
 
-    // Get price estimate
     const priceEstimate = await getEstimatedPrice(
       pickupLat,
       pickupLng,
       dropoffLat,
       dropoffLng,
       luggageCount,
-      seatCount
-    );
+      seatCount,
+    ); // Create ride request
 
-    // Create ride request
     const rideRequest = await prisma.rideRequest.create({
       data: {
         passengerId: passenger.id,
@@ -82,13 +125,12 @@ export async function createRideRequest(req: Request, res: Response) {
         seatCount,
         maxDetourMins,
         estimatedPrice: priceEstimate.pooledPrice,
-        status: 'PENDING',
+        status: "PENDING",
       },
-    });
+    }); // Queue for matching (async)
 
-    // Queue for matching (async)
     queueRideMatch(rideRequest.id).catch((err) => {
-      logger.error('Failed to queue ride match:', err);
+      logger.error("Failed to queue ride match:", err);
     });
 
     logger.info(`Created ride request ${rideRequest.id}`);
@@ -96,11 +138,11 @@ export async function createRideRequest(req: Request, res: Response) {
     res.status(201).json({
       rideRequest,
       priceEstimate,
-      message: 'Ride request created and queued for matching',
+      message: "Ride request created and queued for matching",
     });
   } catch (error) {
-    logger.error('Error creating ride request:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    logger.error("Error creating ride request:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 }
 
@@ -129,7 +171,7 @@ export async function getRideRequest(req: Request, res: Response) {
               },
             },
             route: {
-              orderBy: { sequence: 'asc' },
+              orderBy: { sequence: "asc" },
             },
           },
         },
@@ -137,12 +179,11 @@ export async function getRideRequest(req: Request, res: Response) {
     });
 
     if (!rideRequest) {
-      return res.status(404).json({ error: 'Ride request not found' });
-    }
+      return res.status(404).json({ error: "Ride request not found" });
+    } // Get job status if pending
 
-    // Get job status if pending
     let jobStatus = null;
-    if (rideRequest.status === 'PENDING') {
+    if (rideRequest.status === "PENDING") {
       jobStatus = await getJobStatus(id);
     }
 
@@ -151,8 +192,8 @@ export async function getRideRequest(req: Request, res: Response) {
       jobStatus,
     });
   } catch (error) {
-    logger.error('Error fetching ride request:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    logger.error("Error fetching ride request:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 }
 
@@ -160,33 +201,51 @@ export async function getRideRequest(req: Request, res: Response) {
  * DELETE /api/rides/:id
  * Cancel a ride request
  */
+// Assuming your Request interface is extended with user info (e.g., from JWT middleware)
+// interface AuthenticatedRequest extends Request {
+//   user?: { id: string };
+// }
+
 export async function cancelRideRequest(req: Request, res: Response) {
   try {
-    const { id } = req.params;
+    const { id } = req.params; // 1. Get the authenticated user's ID
+    // Note: Adjust 'req.user.id' based on your actual auth middleware structure
+    const currentUserId = (req as any).user?.id;
+
+    if (!currentUserId) {
+      return res.status(401).json({ error: "User not authenticated" });
+    }
 
     const rideRequest = await prisma.rideRequest.findUnique({
       where: { id },
     });
 
     if (!rideRequest) {
-      return res.status(404).json({ error: 'Ride request not found' });
+      return res.status(404).json({ error: "Ride request not found" });
+    } // 2. VERIFICATION CHECK: Is the current user the owner?
+
+    if (rideRequest.userId !== currentUserId) {
+      return res
+        .status(403)
+        .json({ error: "You are not authorized to cancel this ride" });
     }
 
-    if (rideRequest.status === 'CANCELLED') {
-      return res.status(400).json({ error: 'Ride already cancelled' });
+    if (rideRequest.status === "CANCELLED") {
+      return res.status(400).json({ error: "Ride already cancelled" });
     }
 
-    if (['IN_PROGRESS', 'COMPLETED'].includes(rideRequest.status)) {
-      return res.status(400).json({ error: 'Cannot cancel ride in this status' });
-    }
+    if (["IN_PROGRESS", "COMPLETED"].includes(rideRequest.status)) {
+      return res
+        .status(400)
+        .json({ error: "Cannot cancel ride in this status" });
+    } // Queue cancellation
 
-    // Queue cancellation
     await queueCancellation(id);
 
-    res.json({ message: 'Ride cancellation queued' });
+    res.json({ message: "Ride cancellation queued" });
   } catch (error) {
-    logger.error('Error cancelling ride request:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    logger.error("Error cancelling ride request:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 }
 
@@ -196,10 +255,19 @@ export async function cancelRideRequest(req: Request, res: Response) {
  */
 export async function getPriceEstimate(req: Request, res: Response) {
   try {
-    const { pickupLat, pickupLng, dropoffLat, dropoffLng, luggageCount, seatCount } = req.query;
+    const {
+      pickupLat,
+      pickupLng,
+      dropoffLat,
+      dropoffLng,
+      luggageCount,
+      seatCount,
+    } = req.query;
 
     if (!pickupLat || !pickupLng || !dropoffLat || !dropoffLng) {
-      return res.status(400).json({ error: 'Missing required location fields' });
+      return res
+        .status(400)
+        .json({ error: "Missing required location fields" });
     }
 
     const estimate = await getEstimatedPrice(
@@ -208,13 +276,13 @@ export async function getPriceEstimate(req: Request, res: Response) {
       parseFloat(dropoffLat as string),
       parseFloat(dropoffLng as string),
       parseInt(luggageCount as string) || 1,
-      parseInt(seatCount as string) || 1
+      parseInt(seatCount as string) || 1,
     );
 
     res.json(estimate);
   } catch (error) {
-    logger.error('Error getting price estimate:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    logger.error("Error getting price estimate:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 }
 
@@ -234,7 +302,7 @@ export async function getPassengerRides(req: Request, res: Response) {
 
     const rides = await prisma.rideRequest.findMany({
       where,
-      orderBy: { requestedAt: 'desc' },
+      orderBy: { requestedAt: "desc" },
       take: parseInt(limit as string),
       include: {
         pool: {
@@ -249,7 +317,7 @@ export async function getPassengerRides(req: Request, res: Response) {
 
     res.json({ rides });
   } catch (error) {
-    logger.error('Error fetching passenger rides:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    logger.error("Error fetching passenger rides:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 }

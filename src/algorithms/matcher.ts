@@ -10,12 +10,10 @@
  * - Overall: O(k * n²) per match attempt
  */
 
-import { PrismaClient, RideRequest, Pool } from '@prisma/client';
+import {RideRequest, Pool } from '@prisma/client';
+import { prisma } from "../utils/prisma";
 import { SpatialGrid, haversineDistance, Coordinate } from '../utils/geospatial';
 import { optimizeRoute, calculateDirectRoute, RouteStop, DetourConstraint } from './routeOptimizer';
-
-const prisma = new PrismaClient();
-
 export interface MatchingConfig {
   maxPoolSize: number;
   maxLuggage: number;
@@ -177,49 +175,61 @@ function buildDetourConstraints(
 async function addToPool(
   request: RideRequest,
   pool: Pool,
-  config: MatchingConfig
+  config: MatchingConfig,
+  maxRetries: number = 3,
 ): Promise<boolean> {
-  try {
-    // Use transaction with optimistic locking
-    await prisma.$transaction(async (tx) => {
-      // Re-fetch pool with lock
-      const currentPool = await tx.pool.findUnique({
-        where: { id: pool.id },
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Re-fetch fresh data on each attempt
+        const currentPool = await tx.pool.findUnique({
+          where: { id: pool.id },
+        });
+
+        if (!currentPool) {
+          throw new Error("Pool no longer exists");
+        }
+
+        if (currentPool.version !== pool.version && attempt > 0) {
+          // Version changed, refetch and try again
+          pool = currentPool;
+        }
+
+        // Recheck capacity with fresh data
+        if (currentPool.currentSeats + request.seatCount > config.maxPoolSize) {
+          return false; // No longer space
+        }
+
+        // Update with version check
+        await tx.pool.update({
+          where: {
+            id: pool.id,
+            version: currentPool.version,
+          },
+          data: {
+            currentSeats: { increment: request.seatCount },
+            version: { increment: 1 },
+          },
+        });
+
+        await tx.rideRequest.update({
+          where: { id: request.id },
+          data: { poolId: pool.id, status: "MATCHED" },
+        });
       });
 
-      if (!currentPool || currentPool.version !== pool.version) {
-        throw new Error('Pool was modified by another transaction');
+      return true; 
+    } catch (error) {
+      if (attempt === maxRetries - 1) {
+        logger.error("Failed after max retries:", error);
+        return false;
       }
-
-      // Update pool
-      await tx.pool.update({
-        where: { id: pool.id },
-        data: {
-          currentSeats: { increment: request.seatCount },
-          currentLuggage: { increment: request.luggageCount },
-          version: { increment: 1 },
-        },
-      });
-
-      // Update request
-      await tx.rideRequest.update({
-        where: { id: request.id },
-        data: {
-          poolId: pool.id,
-          status: 'MATCHED',
-          version: { increment: 1 },
-        },
-      });
-
-      // Recalculate and update route
-      await updatePoolRoute(pool.id, tx);
-    });
-
-    return true;
-  } catch (error) {
-    console.error('Failed to add to pool:', error);
-    return false;
+      await new Promise((resolve) =>
+        setTimeout(resolve, 100 * Math.pow(2, attempt)),
+      );
+    }
   }
+  return false;
 }
 
 /**

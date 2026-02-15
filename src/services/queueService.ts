@@ -67,23 +67,26 @@ matchingQueue.process(
   }
 );
 
-/**
- * Add ride matching job to queue
- */
 export async function queueRideMatch(requestId: string): Promise<void> {
+  const existingJob = await matchingQueue.getJob(`match-${requestId}`);
+  if (existingJob) {
+    const state = await existingJob.getState();
+    if (state === "active" || state === "waiting") {
+      return;
+    }
+  }
+
   await matchingQueue.add(
-    { requestId, action: 'match' },
+    { requestId, action: "match" },
     {
       jobId: `match-${requestId}`,
       priority: 1,
-    }
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
   );
-  logger.info(`Queued match job for request ${requestId}`);
 }
 
-/**
- * Add cancellation job to queue
- */
 export async function queueCancellation(requestId: string): Promise<void> {
   // Remove pending match job if exists
   const matchJob = await matchingQueue.getJob(`match-${requestId}`);

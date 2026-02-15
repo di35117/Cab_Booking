@@ -1,7 +1,3 @@
-/**
- * Main Express Server
- * High-performance ride pooling backend
- */
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -9,7 +5,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from "./utils/prisma";
 
 // Load environment variables
 dotenv.config();
@@ -23,7 +19,7 @@ import logger from './utils/logger';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const prisma = new PrismaClient();
+
 
 // Middleware
 app.use(helmet()); // Security headers
