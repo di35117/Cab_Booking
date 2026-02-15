@@ -1,10 +1,14 @@
-import { haversineDistance, estimateTravelTime, Coordinate } from '../utils/geospatial';
+import {
+  haversineDistance,
+  estimateTravelTime,
+  Coordinate,
+} from "../utils/geospatial";
 
 export interface RouteStop {
   id: string;
   requestId: string;
   coordinate: Coordinate;
-  type: 'PICKUP' | 'DROPOFF';
+  type: "PICKUP" | "DROPOFF";
   address: string;
   passengerName?: string;
 }
@@ -28,14 +32,13 @@ export interface DetourConstraint {
  * Optimize route for multiple pickups and dropoffs
  * Complexity: O(n²) with n = number of stops
  * Uses greedy nearest neighbor with constraint validation
- * 
- * @param stops Array of pickup and dropoff points
+ * * @param stops Array of pickup and dropoff points
  * @param detourConstraints Maximum detour allowed per passenger
  * @returns Optimized route with validation
  */
 export function optimizeRoute(
   stops: RouteStop[],
-  detourConstraints: Map<string, DetourConstraint>
+  detourConstraints: Map<string, DetourConstraint>,
 ): OptimizedRoute {
   if (stops.length === 0) {
     return {
@@ -49,17 +52,30 @@ export function optimizeRoute(
 
   // Build constraint graph: pickup must come before dropoff
   const constraints = buildConstraintGraph(stops);
-  
+
   // Use nearest neighbor with constraints
   const route = nearestNeighborWithConstraints(stops, constraints);
-  
+
+  // Check if route generation failed (constraint deadlock)
+  if (!route) {
+    return {
+      stops: [],
+      totalDistance: 0,
+      totalTime: 0,
+      valid: false,
+      detourViolations: [
+        "Route optimization failed: constraint deadlock or disconnected graph",
+      ],
+    };
+  }
+
   // Calculate total distance and time
   const { totalDistance, totalTime } = calculateRouteMetrics(route);
-  
+
   // Validate detour constraints
   const { valid, violations } = validateDetourConstraints(
     route,
-    detourConstraints
+    detourConstraints,
   );
 
   return {
@@ -76,21 +92,21 @@ export function optimizeRoute(
  */
 function buildConstraintGraph(stops: RouteStop[]): Map<string, Set<string>> {
   const graph = new Map<string, Set<string>>();
-  
+
   // Group by request ID
   const requestStops = new Map<string, RouteStop[]>();
-  stops.forEach(stop => {
+  stops.forEach((stop) => {
     if (!requestStops.has(stop.requestId)) {
       requestStops.set(stop.requestId, []);
     }
     requestStops.get(stop.requestId)!.push(stop);
   });
-  
+
   // For each request, dropoff depends on pickup
   requestStops.forEach((reqStops, requestId) => {
-    const pickup = reqStops.find(s => s.type === 'PICKUP');
-    const dropoff = reqStops.find(s => s.type === 'DROPOFF');
-    
+    const pickup = reqStops.find((s) => s.type === "PICKUP");
+    const dropoff = reqStops.find((s) => s.type === "DROPOFF");
+
     if (pickup && dropoff) {
       if (!graph.has(dropoff.id)) {
         graph.set(dropoff.id, new Set());
@@ -98,7 +114,7 @@ function buildConstraintGraph(stops: RouteStop[]): Map<string, Set<string>> {
       graph.get(dropoff.id)!.add(pickup.id);
     }
   });
-  
+
   return graph;
 }
 
@@ -109,52 +125,52 @@ function buildConstraintGraph(stops: RouteStop[]): Map<string, Set<string>> {
  */
 function nearestNeighborWithConstraints(
   stops: RouteStop[],
-  constraints: Map<string, Set<string>>
-): RouteStop[] {
+  constraints: Map<string, Set<string>>,
+): RouteStop[] | null {
   const route: RouteStop[] = [];
   const remaining = new Set(stops);
   const visited = new Set<string>();
-  
+
   // Start with first pickup point
   let current = findFirstPickup(stops);
   route.push(current);
   remaining.delete(current);
   visited.add(current.id);
-  
+
   while (remaining.size > 0) {
     let nearest: RouteStop | null = null;
     let minDistance = Infinity;
-    
+
     // Find nearest valid stop
     for (const candidate of remaining) {
       // Check constraints: all dependencies must be visited
       const deps = constraints.get(candidate.id);
-      if (deps && !Array.from(deps).every(d => visited.has(d))) {
+      if (deps && !Array.from(deps).every((d) => visited.has(d))) {
         continue; // Skip if dependencies not met
       }
-      
+
       const distance = haversineDistance(
         current.coordinate,
-        candidate.coordinate
+        candidate.coordinate,
       );
-      
+
       if (distance < minDistance) {
         minDistance = distance;
         nearest = candidate;
       }
     }
-    
+
     if (!nearest) {
-      // No valid next stop (shouldn't happen with proper constraints)
-      break;
+      // No valid next stop found despite remaining stops (Deadlock)
+      return null;
     }
-    
+
     route.push(nearest);
     remaining.delete(nearest);
     visited.add(nearest.id);
     current = nearest;
   }
-  
+
   return route;
 }
 
@@ -162,7 +178,7 @@ function nearestNeighborWithConstraints(
  * Find first pickup point (prefer closest to origin or arbitrary start)
  */
 function findFirstPickup(stops: RouteStop[]): RouteStop {
-  const pickups = stops.filter(s => s.type === 'PICKUP');
+  const pickups = stops.filter((s) => s.type === "PICKUP");
   return pickups[0]; // In real system, start from depot/airport
 }
 
@@ -175,73 +191,72 @@ function calculateRouteMetrics(route: RouteStop[]): {
   totalTime: number;
 } {
   let totalDistance = 0;
-  
+
   for (let i = 0; i < route.length - 1; i++) {
     const distance = haversineDistance(
       route[i].coordinate,
-      route[i + 1].coordinate
+      route[i + 1].coordinate,
     );
     totalDistance += distance;
   }
-  
+
   const totalTime = estimateTravelTime(totalDistance);
-  
+
   return { totalDistance, totalTime };
 }
 
 /**
  * Validate that no passenger exceeds their detour tolerance
  * Complexity: O(n)
- * 
- * For each passenger, compare actual route time vs direct time
+ * * For each passenger, compare actual route time vs direct time
  */
 function validateDetourConstraints(
   route: RouteStop[],
-  constraints: Map<string, DetourConstraint>
+  constraints: Map<string, DetourConstraint>,
 ): { valid: boolean; violations: string[] } {
   const violations: string[] = [];
   const requestTimes = new Map<string, { pickup: number; dropoff: number }>();
-  
+
   let cumulativeTime = 0;
-  
+
   // Calculate time at each stop
   for (let i = 0; i < route.length; i++) {
     const stop = route[i];
-    
+
     if (i > 0) {
       const distance = haversineDistance(
         route[i - 1].coordinate,
-        stop.coordinate
+        stop.coordinate,
       );
       cumulativeTime += estimateTravelTime(distance);
     }
-    
+
     if (!requestTimes.has(stop.requestId)) {
       requestTimes.set(stop.requestId, { pickup: 0, dropoff: 0 });
     }
-    
-    if (stop.type === 'PICKUP') {
+
+    if (stop.type === "PICKUP") {
       requestTimes.get(stop.requestId)!.pickup = cumulativeTime;
     } else {
       requestTimes.get(stop.requestId)!.dropoff = cumulativeTime;
     }
   }
-  
+
   // Check each passenger's detour
   constraints.forEach((constraint, requestId) => {
     const times = requestTimes.get(requestId);
     if (!times) return;
-    
+
     const actualTravelTime = times.dropoff - times.pickup;
     const detour = actualTravelTime - constraint.directTime;
-    
+
     if (detour > constraint.maxDetourMins) {
       violations.push(
-        `Request ${requestId}: detour ${detour.toFixed(1)}min exceeds limit ${constraint.maxDetourMins}min`
+        `Request ${requestId}: detour ${detour.toFixed(1)}min exceeds limit ${constraint.maxDetourMins}min`,
       );
     }
   });
-  
+
   return {
     valid: violations.length === 0,
     violations,
@@ -253,7 +268,7 @@ function validateDetourConstraints(
  */
 export function calculateDirectRoute(
   pickup: Coordinate,
-  dropoff: Coordinate
+  dropoff: Coordinate,
 ): { distance: number; time: number } {
   const distance = haversineDistance(pickup, dropoff);
   const time = estimateTravelTime(distance);
