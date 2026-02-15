@@ -1,17 +1,14 @@
+
 import { RideRequest, Pool } from "@prisma/client";
 import { prisma } from "../utils/prisma";
-import {
-  SpatialGrid,
-  haversineDistance,
-  Coordinate,
-} from "../utils/geospatial";
+import { haversineDistance, Coordinate } from "../utils/geospatial"; // ✅ Removed unused SpatialGrid
 import {
   optimizeRoute,
   calculateDirectRoute,
   RouteStop,
   DetourConstraint,
 } from "./routeOptimizer";
-import logger from "../utils/logger"; // Assumed logger import based on context
+import logger from "../utils/logger";
 
 export interface MatchingConfig {
   maxPoolSize: number;
@@ -38,6 +35,7 @@ export async function matchRideRequest(
   if (!request) {
     return { success: false, message: "Request not found" };
   }
+
   const matchedPool = await findCompatiblePool(request, config);
 
   if (matchedPool) {
@@ -66,14 +64,15 @@ export async function matchRideRequest(
 
 /**
  * Find compatible pool for a ride request
- * Uses spatial indexing for efficient nearby search
- * Complexity: O(k * n) where k = nearby pools, n = avg pool size
+ * ✅ FIX: Now uses haversineDistance to filter pools by location
  */
 async function findCompatiblePool(
   request: RideRequest,
   config: MatchingConfig,
 ): Promise<Pool | null> {
-  const nearbyPools = await prisma.pool.findMany({
+  // 1. Fetch all candidate pools that are forming and have space
+  // Note: In a production PostGIS DB, we would add bounding box logic to the WHERE clause here.
+  const candidatePools = await prisma.pool.findMany({
     where: {
       status: "FORMING",
       currentSeats: { lt: config.maxPoolSize },
@@ -82,7 +81,32 @@ async function findCompatiblePool(
     include: {
       rideRequests: true,
     },
+    // Limit candidates to prevent scanning entire DB in extreme cases
+    take: 50,
+    orderBy: { createdAt: "desc" },
   });
+
+  const requestLoc: Coordinate = {
+    lat: request.pickupLat,
+    lng: request.pickupLng,
+  };
+
+  // 2. Filter pools by spatial proximity
+  const nearbyPools = candidatePools.filter((pool) => {
+    // If pool is empty (edge case), it's available.
+    // If not, check distance to the first passenger's pickup (as a proxy for pool location)
+    if (pool.rideRequests.length === 0) return true;
+
+    const poolLoc: Coordinate = {
+      lat: pool.rideRequests[0].pickupLat,
+      lng: pool.rideRequests[0].pickupLng,
+    };
+
+    const dist = haversineDistance(requestLoc, poolLoc);
+    return dist <= config.searchRadiusKm;
+  });
+
+  // 3. Check detailed compatibility (route optimization)
   for (const pool of nearbyPools) {
     if (await isCompatible(request, pool, config)) {
       return pool;
@@ -102,6 +126,7 @@ async function isCompatible(
   pool: Pool,
   config: MatchingConfig,
 ): Promise<boolean> {
+  // Double check basic capacity (redundant but safe)
   if (pool.currentSeats + request.seatCount > config.maxPoolSize) {
     return false;
   }
@@ -109,9 +134,11 @@ async function isCompatible(
   if (pool.currentLuggage + request.luggageCount > config.maxLuggage) {
     return false;
   }
+
   const poolRequests = await prisma.rideRequest.findMany({
     where: { poolId: pool.id },
   });
+
   const allRequests = [...poolRequests, request];
   const stops = buildRouteStops(allRequests);
   const constraints = buildDetourConstraints(allRequests);
@@ -180,7 +207,6 @@ async function addToPool(
     try {
       await prisma.$transaction(
         async (tx) => {
-          // Re-fetch fresh data on each attempt
           const currentPool = await tx.pool.findUnique({
             where: { id: pool.id },
           });
@@ -190,19 +216,16 @@ async function addToPool(
           }
 
           if (currentPool.version !== pool.version && attempt > 0) {
-            // Version changed, refetch and try again
             pool = currentPool;
           }
 
-          // Recheck capacity with fresh data
           if (
             currentPool.currentSeats + request.seatCount >
             config.maxPoolSize
           ) {
-            return false; // No longer space
+            return false;
           }
 
-          // Update with version check
           await tx.pool.update({
             where: {
               id: pool.id,
@@ -220,9 +243,8 @@ async function addToPool(
           });
         },
         {
-          // ✅ FIX: Added transaction timeout settings
-          maxWait: 5000, // Max wait 5s to acquire lock
-          timeout: 10000, // Max run time 10s before rollback
+          maxWait: 5000,
+          timeout: 10000,
         },
       );
 
@@ -240,9 +262,6 @@ async function addToPool(
   return false;
 }
 
-/**
- * Create new pool for request
- */
 async function createNewPool(request: RideRequest): Promise<Pool> {
   const pool = await prisma.pool.create({
     data: {
@@ -265,9 +284,6 @@ async function createNewPool(request: RideRequest): Promise<Pool> {
   return pool;
 }
 
-/**
- * Update optimized route for pool
- */
 async function updatePoolRoute(poolId: string, tx: any): Promise<void> {
   const requests = await tx.rideRequest.findMany({
     where: { poolId },
@@ -277,12 +293,10 @@ async function updatePoolRoute(poolId: string, tx: any): Promise<void> {
   const constraints = buildDetourConstraints(requests);
   const route = optimizeRoute(stops, constraints);
 
-  // Delete old route points
   await tx.routePoint.deleteMany({
     where: { poolId },
   });
 
-  // Insert new route points
   const routePoints = route.stops.map((stop, index) => ({
     poolId,
     sequence: index,
@@ -297,7 +311,6 @@ async function updatePoolRoute(poolId: string, tx: any): Promise<void> {
     data: routePoints,
   });
 
-  // Update pool distance
   await tx.pool.update({
     where: { id: poolId },
     data: {
@@ -306,9 +319,6 @@ async function updatePoolRoute(poolId: string, tx: any): Promise<void> {
   });
 }
 
-/**
- * Calculate price for pooled ride
- */
 async function calculatePooledPrice(
   request: RideRequest,
   poolId: string,
@@ -329,7 +339,6 @@ async function calculatePooledPrice(
   let price =
     config.baseFare + distance * config.perKmRate + time * config.perMinuteRate;
 
-  // Apply pool discount
   const pool = await prisma.pool.findUnique({
     where: { id: poolId },
     include: { rideRequests: true },
@@ -339,16 +348,11 @@ async function calculatePooledPrice(
     price *= 1 - config.poolDiscount;
   }
 
-  // Apply surge pricing if high demand
   price *= pool?.surgeFactor || 1.0;
 
   return Math.round(price * 100) / 100;
 }
 
-/**
- * Handle ride cancellation
- * Removes from pool and reoptimizes route
- */
 export async function handleCancellation(requestId: string): Promise<void> {
   await prisma.$transaction(
     async (tx) => {
@@ -360,7 +364,6 @@ export async function handleCancellation(requestId: string): Promise<void> {
         return;
       }
 
-      // Update pool capacity
       await tx.pool.update({
         where: { id: request.poolId },
         data: {
@@ -370,7 +373,6 @@ export async function handleCancellation(requestId: string): Promise<void> {
         },
       });
 
-      // Update request
       await tx.rideRequest.update({
         where: { id: requestId },
         data: {
@@ -380,11 +382,9 @@ export async function handleCancellation(requestId: string): Promise<void> {
         },
       });
 
-      // Reoptimize route
       await updatePoolRoute(request.poolId, tx);
     },
     {
-      // ✅ FIX: Added transaction timeout settings
       maxWait: 5000,
       timeout: 10000,
     },
