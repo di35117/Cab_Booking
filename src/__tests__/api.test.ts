@@ -1,7 +1,3 @@
-/**
- * Integration tests for Ride API
- */
-
 import request from 'supertest';
 import app from '../../server';
 
@@ -47,7 +43,7 @@ describe('Ride API Integration Tests', () => {
   describe('GET /api/rides/:id', () => {
     it('should return ride request details', async () => {
       if (!createdRideId) {
-        return; // Skip if creation failed
+        return;
       }
 
       const response = await request(app)

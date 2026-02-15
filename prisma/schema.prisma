@@ -1,4 +1,3 @@
-// Prisma Schema for Airport Ride Pooling System
 generator client {
   provider = "prisma-client-js"
 }
@@ -22,7 +21,6 @@ model Passenger {
   @@index([phone])
 }
 
-// Ride Request model
 model RideRequest {
   id                String         @id @default(uuid())
   passengerId       String
@@ -52,8 +50,6 @@ model RideRequest {
   @@index([pickupLat, pickupLng])
   @@index([requestedAt])
 }
-
-// Pool model (shared cab)
 model Pool {
   id                String       @id @default(uuid())
   status            PoolStatus   @default(FORMING)
@@ -76,7 +72,6 @@ model Pool {
   @@index([createdAt])
 }
 
-// Route points for optimized path
 model RoutePoint {
   id            String   @id @default(uuid())
   poolId        String
@@ -93,7 +88,6 @@ model RoutePoint {
   @@index([poolId])
 }
 
-// Pricing configuration
 model PricingConfig {
   id                String   @id @default(uuid())
   baseFare          Float    @default(50.0)

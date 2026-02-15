@@ -30,10 +30,6 @@ export interface MatchResult {
   estimatedPrice?: number;
 }
 
-/**
- * Main matching function
- * Attempts to match a ride request with existing pools or creates new pool
- */
 export async function matchRideRequest(
   requestId: string,
   config: MatchingConfig
@@ -45,12 +41,10 @@ export async function matchRideRequest(
   if (!request) {
     return { success: false, message: 'Request not found' };
   }
-
-  // Try to match with existing pools
   const matchedPool = await findCompatiblePool(request, config);
 
   if (matchedPool) {
-    // Add to existing pool
+
     const success = await addToPool(request, matchedPool, config);
     if (success) {
       const price = await calculatePooledPrice(request, matchedPool.id);
@@ -63,7 +57,6 @@ export async function matchRideRequest(
     }
   }
 
-  // Create new pool
   const newPool = await createNewPool(request);
   const price = await calculatePooledPrice(request, newPool.id);
 
@@ -84,7 +77,6 @@ async function findCompatiblePool(
   request: RideRequest,
   config: MatchingConfig
 ): Promise<Pool | null> {
-  // Find pools near pickup location with available capacity
   const nearbyPools = await prisma.pool.findMany({
     where: {
       status: 'FORMING',
@@ -95,8 +87,6 @@ async function findCompatiblePool(
       rideRequests: true,
     },
   });
-
-  // Filter by distance and constraints
   for (const pool of nearbyPools) {
     if (await isCompatible(request, pool, config)) {
       return pool;
@@ -116,7 +106,6 @@ async function isCompatible(
   pool: Pool,
   config: MatchingConfig
 ): Promise<boolean> {
-  // Check capacity constraints
   if (pool.currentSeats + request.seatCount > config.maxPoolSize) {
     return false;
   }
@@ -124,26 +113,17 @@ async function isCompatible(
   if (pool.currentLuggage + request.luggageCount > config.maxLuggage) {
     return false;
   }
-
-  // Check route compatibility
   const poolRequests = await prisma.rideRequest.findMany({
     where: { poolId: pool.id },
   });
-
-  // Build combined route
   const allRequests = [...poolRequests, request];
   const stops = buildRouteStops(allRequests);
   const constraints = buildDetourConstraints(allRequests);
 
   const optimizedRoute = optimizeRoute(stops, constraints);
-
-  // Must be valid route with no detour violations
   return optimizedRoute.valid;
 }
 
-/**
- * Build route stops from requests
- */
 function buildRouteStops(requests: RideRequest[]): RouteStop[] {
   const stops: RouteStop[] = [];
 
@@ -168,9 +148,6 @@ function buildRouteStops(requests: RideRequest[]): RouteStop[] {
   return stops;
 }
 
-/**
- * Build detour constraints for all requests
- */
 function buildDetourConstraints(
   requests: RideRequest[]
 ): Map<string, DetourConstraint> {

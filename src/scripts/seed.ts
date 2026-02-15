@@ -1,13 +1,5 @@
-/**
- * Database Seeding Script
- * Populates database with realistic test data
- */
-
 import { PrismaClient } from '@prisma/client';
-
 const prisma = new PrismaClient();
-
-// Sample airports and destinations around a city
 const LOCATIONS = {
   airport: { lat: 12.9716, lng: 77.5946, address: 'Kempegowda International Airport, Bangalore' },
   destinations: [
@@ -43,9 +35,7 @@ const PASSENGER_NAMES = [
 ];
 
 async function main() {
-  console.log('🌱 Starting database seed...');
-
-  // Create pricing config
+  console.log('Starting database seed...');
   await prisma.pricingConfig.upsert({
     where: { id: '1' },
     update: {},
@@ -59,9 +49,7 @@ async function main() {
       maxSurgeFactor: 2.5,
     },
   });
-  console.log('✅ Pricing config created');
-
-  // Create passengers
+  console.log('Pricing config created');
   const passengers = [];
   for (let i = 0; i < PASSENGER_NAMES.length; i++) {
     const passenger = await prisma.passenger.upsert({
@@ -75,9 +63,7 @@ async function main() {
     });
     passengers.push(passenger);
   }
-  console.log(`✅ Created ${passengers.length} passengers`);
-
-  // Create sample ride requests
+  console.log(`Created ${passengers.length} passengers`);
   const rideRequests = [];
   for (let i = 0; i < 30; i++) {
     const passenger = passengers[i % passengers.length];
@@ -107,9 +93,7 @@ async function main() {
     });
     rideRequests.push(request);
   }
-  console.log(`✅ Created ${rideRequests.length} ride requests`);
-
-  // Create sample pools
+  console.log(`Created ${rideRequests.length} ride requests`);
   for (let i = 0; i < 5; i++) {
     const status = i === 0 ? 'FORMING' : i < 3 ? 'IN_PROGRESS' : 'COMPLETED';
     await prisma.pool.create({
@@ -128,14 +112,13 @@ async function main() {
       },
     });
   }
-  console.log('✅ Created 5 sample pools');
-
-  console.log('🎉 Database seeding completed!');
+  console.log('Created 5 sample pools');
+  console.log('Database seeding completed!');
 }
 
 main()
   .catch((e) => {
-    console.error('❌ Seeding failed:', e);
+    console.error('Seeding failed:', e);
     process.exit(1);
   })
   .finally(async () => {

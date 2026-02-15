@@ -1,9 +1,3 @@
-/**
- * Route Optimization Algorithm
- * Modified TSP solver with pickup-before-dropoff constraints
- * Uses nearest neighbor heuristic with local optimization
- */
-
 import { haversineDistance, estimateTravelTime, Coordinate } from '../utils/geospatial';
 
 export interface RouteStop {
