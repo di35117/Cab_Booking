@@ -236,7 +236,13 @@ async function addToPool(
       return true;
     } catch (error) {
       if (attempt === maxRetries - 1) {
-        logger.error("Failed after max retries:", error);
+        logger.error("Pool assignment failed after max retries", {
+          requestId: request.id,
+          poolId: pool.id,
+          error: error instanceof Error ? error.message : "Unknown error",
+          attempt: attempt + 1,
+          context: "matching-engine",
+        });
         return false;
       }
       await new Promise((resolve) =>
