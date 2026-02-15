@@ -1,19 +1,18 @@
-/**
- * Ride Matching Algorithm
- * Groups passengers into pools while respecting constraints
- * Uses greedy algorithm with spatial indexing
- * 
- * Complexity Analysis:
- * - Spatial lookup: O(k) where k = nearby requests
- * - Compatibility check: O(1)
- * - Route optimization: O(n²) where n = pool size
- * - Overall: O(k * n²) per match attempt
- */
-
-import {RideRequest, Pool } from '@prisma/client';
+import { RideRequest, Pool } from "@prisma/client";
 import { prisma } from "../utils/prisma";
-import { SpatialGrid, haversineDistance, Coordinate } from '../utils/geospatial';
-import { optimizeRoute, calculateDirectRoute, RouteStop, DetourConstraint } from './routeOptimizer';
+import {
+  SpatialGrid,
+  haversineDistance,
+  Coordinate,
+} from "../utils/geospatial";
+import {
+  optimizeRoute,
+  calculateDirectRoute,
+  RouteStop,
+  DetourConstraint,
+} from "./routeOptimizer";
+import logger from "../utils/logger"; // Assumed logger import based on context
+
 export interface MatchingConfig {
   maxPoolSize: number;
   maxLuggage: number;
@@ -30,26 +29,25 @@ export interface MatchResult {
 
 export async function matchRideRequest(
   requestId: string,
-  config: MatchingConfig
+  config: MatchingConfig,
 ): Promise<MatchResult> {
   const request = await prisma.rideRequest.findUnique({
     where: { id: requestId },
   });
 
   if (!request) {
-    return { success: false, message: 'Request not found' };
+    return { success: false, message: "Request not found" };
   }
   const matchedPool = await findCompatiblePool(request, config);
 
   if (matchedPool) {
-
     const success = await addToPool(request, matchedPool, config);
     if (success) {
       const price = await calculatePooledPrice(request, matchedPool.id);
       return {
         success: true,
         poolId: matchedPool.id,
-        message: 'Matched with existing pool',
+        message: "Matched with existing pool",
         estimatedPrice: price,
       };
     }
@@ -61,7 +59,7 @@ export async function matchRideRequest(
   return {
     success: true,
     poolId: newPool.id,
-    message: 'Created new pool',
+    message: "Created new pool",
     estimatedPrice: price,
   };
 }
@@ -73,11 +71,11 @@ export async function matchRideRequest(
  */
 async function findCompatiblePool(
   request: RideRequest,
-  config: MatchingConfig
+  config: MatchingConfig,
 ): Promise<Pool | null> {
   const nearbyPools = await prisma.pool.findMany({
     where: {
-      status: 'FORMING',
+      status: "FORMING",
       currentSeats: { lt: config.maxPoolSize },
       currentLuggage: { lt: config.maxLuggage },
     },
@@ -102,7 +100,7 @@ async function findCompatiblePool(
 async function isCompatible(
   request: RideRequest,
   pool: Pool,
-  config: MatchingConfig
+  config: MatchingConfig,
 ): Promise<boolean> {
   if (pool.currentSeats + request.seatCount > config.maxPoolSize) {
     return false;
@@ -125,12 +123,12 @@ async function isCompatible(
 function buildRouteStops(requests: RideRequest[]): RouteStop[] {
   const stops: RouteStop[] = [];
 
-  requests.forEach(req => {
+  requests.forEach((req) => {
     stops.push({
       id: `${req.id}-pickup`,
       requestId: req.id,
       coordinate: { lat: req.pickupLat, lng: req.pickupLng },
-      type: 'PICKUP',
+      type: "PICKUP",
       address: req.pickupAddress,
     });
 
@@ -138,7 +136,7 @@ function buildRouteStops(requests: RideRequest[]): RouteStop[] {
       id: `${req.id}-dropoff`,
       requestId: req.id,
       coordinate: { lat: req.dropoffLat, lng: req.dropoffLng },
-      type: 'DROPOFF',
+      type: "DROPOFF",
       address: req.dropoffAddress,
     });
   });
@@ -147,14 +145,14 @@ function buildRouteStops(requests: RideRequest[]): RouteStop[] {
 }
 
 function buildDetourConstraints(
-  requests: RideRequest[]
+  requests: RideRequest[],
 ): Map<string, DetourConstraint> {
   const constraints = new Map<string, DetourConstraint>();
 
-  requests.forEach(req => {
+  requests.forEach((req) => {
     const { distance, time } = calculateDirectRoute(
       { lat: req.pickupLat, lng: req.pickupLng },
-      { lat: req.dropoffLat, lng: req.dropoffLng }
+      { lat: req.dropoffLat, lng: req.dropoffLng },
     );
 
     constraints.set(req.id, {
@@ -180,45 +178,55 @@ async function addToPool(
 ): Promise<boolean> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      await prisma.$transaction(async (tx) => {
-        // Re-fetch fresh data on each attempt
-        const currentPool = await tx.pool.findUnique({
-          where: { id: pool.id },
-        });
+      await prisma.$transaction(
+        async (tx) => {
+          // Re-fetch fresh data on each attempt
+          const currentPool = await tx.pool.findUnique({
+            where: { id: pool.id },
+          });
 
-        if (!currentPool) {
-          throw new Error("Pool no longer exists");
-        }
+          if (!currentPool) {
+            throw new Error("Pool no longer exists");
+          }
 
-        if (currentPool.version !== pool.version && attempt > 0) {
-          // Version changed, refetch and try again
-          pool = currentPool;
-        }
+          if (currentPool.version !== pool.version && attempt > 0) {
+            // Version changed, refetch and try again
+            pool = currentPool;
+          }
 
-        // Recheck capacity with fresh data
-        if (currentPool.currentSeats + request.seatCount > config.maxPoolSize) {
-          return false; // No longer space
-        }
+          // Recheck capacity with fresh data
+          if (
+            currentPool.currentSeats + request.seatCount >
+            config.maxPoolSize
+          ) {
+            return false; // No longer space
+          }
 
-        // Update with version check
-        await tx.pool.update({
-          where: {
-            id: pool.id,
-            version: currentPool.version,
-          },
-          data: {
-            currentSeats: { increment: request.seatCount },
-            version: { increment: 1 },
-          },
-        });
+          // Update with version check
+          await tx.pool.update({
+            where: {
+              id: pool.id,
+              version: currentPool.version,
+            },
+            data: {
+              currentSeats: { increment: request.seatCount },
+              version: { increment: 1 },
+            },
+          });
 
-        await tx.rideRequest.update({
-          where: { id: request.id },
-          data: { poolId: pool.id, status: "MATCHED" },
-        });
-      });
+          await tx.rideRequest.update({
+            where: { id: request.id },
+            data: { poolId: pool.id, status: "MATCHED" },
+          });
+        },
+        {
+          // ✅ FIX: Added transaction timeout settings
+          maxWait: 5000, // Max wait 5s to acquire lock
+          timeout: 10000, // Max run time 10s before rollback
+        },
+      );
 
-      return true; 
+      return true;
     } catch (error) {
       if (attempt === maxRetries - 1) {
         logger.error("Failed after max retries:", error);
@@ -240,7 +248,7 @@ async function createNewPool(request: RideRequest): Promise<Pool> {
     data: {
       currentSeats: request.seatCount,
       currentLuggage: request.luggageCount,
-      status: 'FORMING',
+      status: "FORMING",
     },
   });
 
@@ -248,7 +256,7 @@ async function createNewPool(request: RideRequest): Promise<Pool> {
     where: { id: request.id },
     data: {
       poolId: pool.id,
-      status: 'MATCHED',
+      status: "MATCHED",
     },
   });
 
@@ -303,22 +311,23 @@ async function updatePoolRoute(poolId: string, tx: any): Promise<void> {
  */
 async function calculatePooledPrice(
   request: RideRequest,
-  poolId: string
+  poolId: string,
 ): Promise<number> {
   const pricingConfig = await prisma.pricingConfig.findFirst();
   const config = pricingConfig || {
     baseFare: 50,
     perKmRate: 12,
     perMinuteRate: 2,
-    poolDiscount: 0.30,
+    poolDiscount: 0.3,
   };
 
   const { distance, time } = calculateDirectRoute(
     { lat: request.pickupLat, lng: request.pickupLng },
-    { lat: request.dropoffLat, lng: request.dropoffLng }
+    { lat: request.dropoffLat, lng: request.dropoffLng },
   );
 
-  let price = config.baseFare + distance * config.perKmRate + time * config.perMinuteRate;
+  let price =
+    config.baseFare + distance * config.perKmRate + time * config.perMinuteRate;
 
   // Apply pool discount
   const pool = await prisma.pool.findUnique({
@@ -341,36 +350,43 @@ async function calculatePooledPrice(
  * Removes from pool and reoptimizes route
  */
 export async function handleCancellation(requestId: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const request = await tx.rideRequest.findUnique({
-      where: { id: requestId },
-    });
+  await prisma.$transaction(
+    async (tx) => {
+      const request = await tx.rideRequest.findUnique({
+        where: { id: requestId },
+      });
 
-    if (!request || !request.poolId) {
-      return;
-    }
+      if (!request || !request.poolId) {
+        return;
+      }
 
-    // Update pool capacity
-    await tx.pool.update({
-      where: { id: request.poolId },
-      data: {
-        currentSeats: { decrement: request.seatCount },
-        currentLuggage: { decrement: request.luggageCount },
-        version: { increment: 1 },
-      },
-    });
+      // Update pool capacity
+      await tx.pool.update({
+        where: { id: request.poolId },
+        data: {
+          currentSeats: { decrement: request.seatCount },
+          currentLuggage: { decrement: request.luggageCount },
+          version: { increment: 1 },
+        },
+      });
 
-    // Update request
-    await tx.rideRequest.update({
-      where: { id: requestId },
-      data: {
-        status: 'CANCELLED',
-        poolId: null,
-        cancelledAt: new Date(),
-      },
-    });
+      // Update request
+      await tx.rideRequest.update({
+        where: { id: requestId },
+        data: {
+          status: "CANCELLED",
+          poolId: null,
+          cancelledAt: new Date(),
+        },
+      });
 
-    // Reoptimize route
-    await updatePoolRoute(request.poolId, tx);
-  });
+      // Reoptimize route
+      await updatePoolRoute(request.poolId, tx);
+    },
+    {
+      // ✅ FIX: Added transaction timeout settings
+      maxWait: 5000,
+      timeout: 10000,
+    },
+  );
 }
