@@ -266,7 +266,7 @@ async function createNewPool(request: RideRequest): Promise<Pool> {
     where: { id: request.id },
     data: {
       poolId: pool.id,
-      status: "MATCHED",
+      status: "FORMED and MATCHED",
     },
   });
 
